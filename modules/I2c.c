@@ -9,7 +9,7 @@
 #define PCONP (* (unsigned int *) 0x400FC0C4)
 #define PCI2C1 0x80000
 
-#define PCLKSEL1 0x400FC1AC
+#define PCLKSEL1 (* (unsigned int *) 0x400FC1AC)
 #define PCLK_I2C1 0xC0
 
 // Pin function selection register.
@@ -36,17 +36,17 @@
 // bit 2, acknowledge signal
 #define I2C1CONSET_ACK 0x04
 
-#define I2C1CONCLR 0x400C018
+#define I2C1CONCLR (* (unsigned int *) 0x4005C018)
 #define I2C1CONCLR_SIC 0x10
 
 // data register
-#define I2C1DAT 0x4005C008
+#define I2C1DAT (* (unsigned int *) 0x4005C008)
 
 void initI2C() {
     // enable power for I2C1
     PCONP |= PCI2C1;
     // set clock to default (is normally default anyway...)
-    PCLKSEL0 |= PCLK_I2C1;
+    PCLKSEL1 |= PCLK_I2C1;
     // set function of pins P0[27] and p0[28] to I2C1 SDA and SCL
     PINSEL1 |= PINSEL1_SCL1 | PINSEL1_SDA1;
     // enable interrupts for I2C1
@@ -74,7 +74,7 @@ void writeByte (unsigned char byte) {
 void writeData (unsigned char data) {
     // start command
     writeByte((SLA << 1) | I2C_WRITE);
-    I2CCONSET |= I2C1CONSET_STA;
+    I2C1CONSET |= I2C1CONSET_STA;
     writeByte(data);
     // initialize the master data counter to match the length of the message being sent?
 }
