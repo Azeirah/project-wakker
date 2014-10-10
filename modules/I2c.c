@@ -1,92 +1,176 @@
-// use these two to set I2C1 clock, default is CCLK/4 (CCLK = cpu clock)
-// #define PCLKSEL0 (* (unsigned int *) 0x400FC1A8)
-// #define PCLK_I2C1 0xC000
+#include <stdlib.h>
 
-#define I2C_READ 1
-#define I2C_WRITE ~1
+#define I2C_READ  0xD1
+#define I2C_WRITE 0xD0
+
+#define I2CLH (* (unsigned int *) 0x4005C010) // v
+#define I2CLL (* (unsigned int *) 0x4005C014) // v
+#define PINMODE_OD0 (* (unsigned int *) 0x4002C068) // v
+#define PINMODE_IC1 0x3
+#define PINMODE0 (* (unsigned int *) 0x4002C040) // v
 
 // Power control register, set PCI2C1 to 1 to enable I2C1
-#define PCONP (* (unsigned int *) 0x400FC0C4)
+#define PCONP (* (unsigned int *) 0x400FC0C4) // v
 #define PCI2C1 0x80000
 
-#define PCLKSEL1 (* (unsigned int *) 0x400FC1AC)
+#define PCLKSEL1 (* (unsigned int *) 0x400FC1AC) // v
 #define PCLK_I2C1 0xC0
 
-// Pin function selection register.
-#define PINSEL1 (* (unsigned int *) 0x4002C004)
-// both must be set to 11
-#define PINSEL1_SDA1 0x0C0
-#define PINSEL1_SCL1 0x300
+#define PINSEL0 (* (unsigned int *) 0x4002C000) // v
+#define PINSEL0_SDA1 0x3
+#define PINSEL0_SCL1 0xC
 
-// I2C1 Interrupt is at http://www.nxp.com/documents/user_manual/UM10360.pdf#G7.1002159337
-// vector offset 0x6C, interrupt ID 11
-// Interrupt enable register
-#define ISER0 (* (unsigned int *) 0xE000E100)
+#define ISER0 (* (unsigned int *) 0xE000E100) // v
 #define ISE_I2C1 0x800
 
-// slave address
-#define SLA 0x68
-
-#define I2C1CONSET (* (unsigned int *) 0x4005C000)
+#define I2STAT (* (unsigned int *) 0x4005C004) // v
+#define I2C1CONSET (* (unsigned int *) 0x4005C000) // v
 #define I2C1CONSET_EN 0x40
-// bit 5, start condition
 #define I2C1CONSET_STA 0x20
-// bit 4, stop condition
 #define I2C1CONSET_STO 0x10
-// bit 2, acknowledge signal
 #define I2C1CONSET_ACK 0x04
-
-#define I2C1CONCLR (* (unsigned int *) 0x4005C018)
+#define I2C1CONCLR (* (unsigned int *) 0x4005C018) // v
 #define I2C1CONCLR_SIC 0x10
+#define I2C1DAT (* (unsigned int *) 0x4005C008) // v
 
-// data register
-#define I2C1DAT (* (unsigned int *) 0x4005C008)
+#define SECONDS    (* (unsigned int *) 0x00)
+#define MINUTES    (* (unsigned int *) 0x01)
+#define HOURS      (* (unsigned int *) 0x02)
+#define DAY        (* (unsigned int *) 0x03)
+#define DATE       (* (unsigned int *) 0x04)
+#define MONTH      (* (unsigned int *) 0x05)
+#define YEAR       (* (unsigned int *) 0x06)
+#define CONTROL    (* (unsigned int *) 0x07)
+
+/*** Both master modes ***/
+int masterDataCounter = 0;
+unsigned char addressByte = 0;
+
+/*** Master transmit mode ***/
+unsigned char masterTransmitBuffer[5];
+int masterTransmitBufferPointer = 0;
+
+/*** Master receive mode ***/
+unsigned char masterReceiveBuffer[5];
+int masterReceiveBufferPointer = 0;
 
 void initI2C() {
-    // enable power for I2C1
-    PCONP |= PCI2C1;
-    // set clock to default (is normally default anyway...)
-    PCLKSEL1 |= PCLK_I2C1;
-    // set function of pins P0[27] and p0[28] to I2C1 SDA and SCL
-    PINSEL1 |= PINSEL1_SCL1 | PINSEL1_SDA1;
-    // enable interrupts for I2C1
-    ISER0 |= ISE_I2C1;
-
-    I2C1CONSET |= I2C1CONSET_EN;
+	PCONP       |= PCI2C1;
+    PCLKSEL1    |= PCLK_I2C1;
+    PINSEL0     |= PINSEL0_SCL1 | PINSEL0_SDA1;
+    ISER0       |= ISE_I2C1;
+    PINMODE0    |= 0x0A;
+    PINMODE_OD0 |= PINMODE_IC1;
+    I2C1CONSET  |= 0x40;
+    I2CLH        = 0x0A;
+    I2CLL        = 0x0A;
 }
 
-void startCondition() {
-    I2C1CONSET |= I2C1CONSET_STA;
+void beginTransmission (unsigned char bytesAmount, unsigned char* data) {
+    addressByte = I2C_WRITE;
+    for (int i = 0; i < bytesAmount; i++) {
+    	masterTransmitBuffer[i] = data[i];
+    }
+    masterTransmitBufferPointer = 0;
+    masterDataCounter           = bytesAmount;
+    I2C1CONSET                  = 0x20;
 }
 
-void stopCondition() {
-    I2C1CONSET |= I2C1CONSET_STO;
+void debug(unsigned char state) {
+	// the software will go here if the I2C state machine tries to handle a state that I'm not explicitly handling
+	__asm("nop");
 }
 
-void sendAcknowledge() {
-    I2C1CONSET |= I2C1CONSET_ACK;
-}
+// interrupt
+void I2C1_IRQHandler () {
+	unsigned char status = I2STAT;
+	switch (status) {
+		case 0x00: // ✓
+			/*** Bus error fault ***/
+			I2C1CONSET = 0x14;
+			I2C1CONCLR = 0x08;
+			break;
+		/* Master states; for both transmit and receive modes */
+		case 0x08: // ✓
+			/*** Start condition has been transmitted ***/
+			I2C1DAT    = addressByte;
+			I2C1CONSET = 0x04;
+			I2C1CONCLR = 0x28;
+			// reset receive and transmit buffers
+//			memset(masterTransmitBuffer, 0, masterDataCounter);
+//			memset(masterReceiveBuffer, 0, masterDataCounter);
+//			masterDataCounter = 0;
+			break;
+		case 0x10: // ✓
+			/*** Repeated start condition has been transmitted ***/
+			I2C1DAT    = addressByte;
+			I2C1CONSET = 0x04;
+			I2C1CONCLR = 0x28;
+//			memset(masterTransmitBuffer, 0, masterDataCounter);
+//			memset(masterReceiveBuffer, 0, masterDataCounter);
+//			masterDataCounter = 0;
+			break;
+		/* Master transmitter states */
+		case 0x18: // ✓
+			/*** Slave addres + write has been transmitted and ACK has been received ***/
+			I2C1DAT    = masterTransmitBuffer[masterTransmitBufferPointer];
+			I2C1CONSET = 0x04;
+			I2C1CONCLR = 0x08;
+			masterTransmitBufferPointer += 1;
+			break;
+		case 0x20: // ✓
+			/*** Slave address + write has been transmitted, NACK has been received ***/
+			I2C1CONSET = 0x14;
+			I2C1CONCLR = 0x08;
+			break;
+		case 0x28: // ✓
+			/*** Data has been transmitted, ACK has been received, if transmitted data was last byte then transmit STOP
+			 * otherwise transmit next data byte ***/
+			if ((--masterDataCounter) == 0) {// --var var--
+				I2C1CONSET = 0x14;
+				I2C1CONCLR = 0x08;
+			} else {
+				I2C1CONSET = 0x04;
+				I2C1CONCLR = 0x08;
+				I2C1DAT = masterTransmitBuffer[masterTransmitBufferPointer++];
+			}
+			break;
+		case 0x30: // ✓
+			/*** Data has been transmitted, NACK received ***/
+			I2C1CONSET = 0x14;
+			I2C1CONCLR = 0x08;
+			break;
+		case 0x38: // ✓
+			I2C1CONSET = 0x24;
+			I2C1CONCLR = 0x08;
+			break;
+		case 0x40:
+			/*** Slave Address + read has been transmitted, ACK was received ***/
+			I2C1CONSET = 0x04;
+			I2C1CONCLR = 0x08;
+			break;
+		/* master receiver states */
+		case 0x48:
+			/*** Slave address + read has been transmitted, NACK was received ***/
+			I2C1CONSET = 0x14;
+			I2C1CONCLR = 0x08;
+			break;
+		case 0x50:
+			/*** Data has been received, ACK was returned. Data will be read from I2DAT.
+			 * Additional data will be received
+			 * If this is the last data byte, than NACK will be returned, otherwise ACK will be returned ***/
+			if (masterDataCounter == 0) {
+				masterReceiveBuffer[masterReceiveBufferPointer++] = I2C1DAT;
+				masterDataCounter--;
+				break;
+			} else {
+				I2C1CONSET = 0x04;
+				I2C1CONCLR = 0x08;
+			}
+		//! NOT FINISHED, FINISH STATES IN ORDER TO ADD READ FUNCTIONALITY http://www.nxp.com/documents/user_manual/UM10360.pdf#page=478&zoom=auto,-56,695
+		default:
+			debug(status);
+			break;
+	}
 
-void writeByte (unsigned char byte) {
-    I2C1DAT |= byte;
 }
-
-void writeData (unsigned char data) {
-    // start command
-    writeByte((SLA << 1) | I2C_WRITE);
-    I2C1CONSET |= I2C1CONSET_STA;
-    writeByte(data);
-    // initialize the master data counter to match the length of the message being sent?
-}
-
-unsigned char readData () {
-    writeByte((SLA << 1) | I2C_WRITE);
-    startCondition();
-    // initialize the master data counter to match the length of the message being sent?
-    return I2C1DAT;
-}
-
-void clearI2CInterrupt () {
-    I2C1CONCLR |= I2C1CONCLR_SIC;
-}
-
