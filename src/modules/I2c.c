@@ -47,11 +47,11 @@ int masterDataCounter = 0;
 unsigned char addressByte = 0;
 
 /*** Master transmit mode ***/
-unsigned char masterTransmitBuffer[5];
+unsigned char masterTransmitBuffer[8];
 int masterTransmitBufferPointer = 0;
 
 /*** Master receive mode ***/
-unsigned char masterReceiveBuffer[5];
+unsigned char *masterReceiveBuffer;
 int masterReceiveBufferPointer = 0;
 
 void initI2C() {
@@ -76,9 +76,23 @@ void beginTransmission (unsigned char bytesAmount, unsigned char* data) {
     I2C1CONSET                  = 0x20;
 }
 
+void receive(unsigned char bytesAmount) {
+	masterDataCounter   = 0;
+	addressByte         = I2C_READ;
+	I2C1CONSET          = 0x20;
+	memset(masterReceiveBuffer, 0, bytesAmount);
+	masterDataCounter   = bytesAmount;
+}
+
 void debug(unsigned char state) {
 	// the software will go here if the I2C state machine tries to handle a state that I'm not explicitly handling
 	__asm("nop");
+}
+
+void block(int nops) {
+	for (int i = 0; i < nops; i++) {
+		__asm("nop");
+	}
 }
 
 // interrupt
@@ -96,19 +110,12 @@ void I2C1_IRQHandler () {
 			I2C1DAT    = addressByte;
 			I2C1CONSET = 0x04;
 			I2C1CONCLR = 0x28;
-			// reset receive and transmit buffers
-//			memset(masterTransmitBuffer, 0, masterDataCounter);
-//			memset(masterReceiveBuffer, 0, masterDataCounter);
-//			masterDataCounter = 0;
 			break;
 		case 0x10: // ✓
 			/*** Repeated start condition has been transmitted ***/
-			I2C1DAT    = addressByte;
+			I2C1DAT = addressByte;
 			I2C1CONSET = 0x04;
 			I2C1CONCLR = 0x28;
-//			memset(masterTransmitBuffer, 0, masterDataCounter);
-//			memset(masterReceiveBuffer, 0, masterDataCounter);
-//			masterDataCounter = 0;
 			break;
 		/* Master transmitter states */
 		case 0x18: // ✓
@@ -126,7 +133,7 @@ void I2C1_IRQHandler () {
 		case 0x28: // ✓
 			/*** Data has been transmitted, ACK has been received, if transmitted data was last byte then transmit STOP
 			 * otherwise transmit next data byte ***/
-			if ((--masterDataCounter) == 0) {// --var var--
+			if ((--masterDataCounter) == 0) {
 				I2C1CONSET = 0x14;
 				I2C1CONCLR = 0x08;
 			} else {
@@ -156,18 +163,24 @@ void I2C1_IRQHandler () {
 			I2C1CONCLR = 0x08;
 			break;
 		case 0x50:
-			/*** Data has been received, ACK was returned. Data will be read from I2DAT.
-			 * Additional data will be received
-			 * If this is the last data byte, than NACK will be returned, otherwise ACK will be returned ***/
-			if (masterDataCounter == 0) {
-				masterReceiveBuffer[masterReceiveBufferPointer++] = I2C1DAT;
-				masterDataCounter--;
-				break;
-			} else {
-				I2C1CONSET = 0x04;
-				I2C1CONCLR = 0x08;
-			}
-		//! NOT FINISHED, FINISH STATES IN ORDER TO ADD READ FUNCTIONALITY http://www.nxp.com/documents/user_manual/UM10360.pdf#page=478&zoom=auto,-56,695
+		    /*** Data has been received, ACK was returned. Data will be read from I2DAT.
+		     * Additional data will be received
+		     * If this is the last data byte, than NACK will be returned, otherwise ACK will be returned ***/
+			masterReceiveBuffer[masterReceiveBufferPointer] = I2C1DAT;
+		    if ((--masterDataCounter) == 0) {
+		        I2C1CONCLR = 0x0C;
+		    } else {
+		        I2C1CONSET = 0x04;
+		        I2C1CONCLR = 0x08;
+		        masterReceiveBufferPointer++;
+		    }
+		    break;
+		case 0x58:
+			/*** Data has been received, NACK was returned. Data will be read from I2DAT. ***/
+			masterReceiveBuffer[masterReceiveBufferPointer] = I2C1DAT;
+			I2C1CONSET = 0x14;
+			I2C1CONCLR = 0x08;
+			break;
 		default:
 			debug(status);
 			break;
